@@ -1,39 +1,44 @@
 import cv2
+import os
 import pickle
+import faiss
 import numpy as np
 from insightface.app import FaceAnalysis
-from sklearn.metrics.pairwise import cosine_similarity
+from collections import deque, Counter
+
+# ================== PATH SETUP ==================
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+EMBED_DIR = os.path.join(BASE_DIR, "embeddings")
+
+FAISS_INDEX_PATH = os.path.join(EMBED_DIR, "faiss.index")
+ID_MAP_PATH = os.path.join(EMBED_DIR, "id_map.pkl")
 
 # ================== CONFIG ==================
-FRAME_SKIP = 3          # 🔥 increase for more speed (2–4)
 THRESHOLD = 0.45
-EMBEDDINGS_PATH = "embeddings/face_embeddings.pkl"
+DETECT_EVERY_N_FRAMES = 30
+MAX_FACES = 5
+VOTE_WINDOW = 5
 # ============================================
 
-print("🔄 Loading InsightFace (SCRFD + ArcFace)...")
+print("🔄 Loading InsightFace...")
 app = FaceAnalysis(name="buffalo_l")
-app.prepare(ctx_id=0, det_size=(416, 416))  # 🔥 smaller detector input
+app.prepare(ctx_id=0, det_size=(320, 320))
 print("✓ InsightFace ready")
 
-print("🔄 Loading known face embeddings...")
-with open(EMBEDDINGS_PATH, "rb") as f:
-    known_embeddings, known_names = pickle.load(f)
-known_embeddings = np.array(known_embeddings)
-print(f"✓ Loaded {len(known_names)} embeddings")
+print("🔄 Loading FAISS index...")
+index = faiss.read_index(FAISS_INDEX_PATH)
 
-print("\n📷 Opening camera...")
+with open(ID_MAP_PATH, "rb") as f:
+    id_names = pickle.load(f)
+
+print(f"✓ FAISS index loaded ({index.ntotal} identities)")
+
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-if not cap.isOpened():
-    print("❌ Cannot open camera")
-    exit()
-
-print("✓ Camera opened | Press Q to quit\n")
-
+tracked_faces = []
 frame_id = 0
-last_faces = []   # 🔥 cache results
 
 while True:
     ret, frame = cap.read()
@@ -42,50 +47,78 @@ while True:
 
     frame_id += 1
 
-    # ========= RUN HEAVY MODELS ONLY ON SKIPPED FRAMES =========
-    if frame_id % FRAME_SKIP == 0:
-        faces = app.get(frame)
-        last_faces = []
+    # ================= TRACKING =================
+    active_tracks = []
+    for data in tracked_faces:
+        ok, bbox = data["tracker"].update(frame)
+        if ok:
+            x, y, w, h = map(int, bbox)
+            active_tracks.append(data)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), data["color"], 2)
+            cv2.putText(
+                frame,
+                data["name"],
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                data["color"],
+                2
+            )
+
+    tracked_faces = active_tracks
+
+    # ================= DETECTION + FAISS =================
+    if frame_id % DETECT_EVERY_N_FRAMES == 0 or len(tracked_faces) == 0:
+        faces = app.get(frame)[:MAX_FACES]
+        tracked_faces = []
 
         for face in faces:
             x1, y1, x2, y2 = map(int, face.bbox)
-            embedding = face.embedding
-            embedding = embedding / np.linalg.norm(embedding)
+            w, h = x2 - x1, y2 - y1
 
-            sims = cosine_similarity(
-                embedding.reshape(1, -1), known_embeddings
-            )[0]
+            emb = face.embedding.astype("float32")
+            emb = emb / np.linalg.norm(emb)
+            emb = emb.reshape(1, -1)
 
-            best_idx = np.argmax(sims)
-            best_score = sims[best_idx]
+            D, I = index.search(emb, k=1)
+            score = float(D[0][0])
+            idx = int(I[0][0])
 
-            if best_score > THRESHOLD:
-                name = known_names[best_idx]
-                color = (0, 255, 0)
+            if score > THRESHOLD:
+                vote = id_names[idx]
             else:
-                name = "Unknown"
-                color = (0, 0, 255)
+                vote = "Unknown"
 
-            last_faces.append((x1, y1, x2, y2, name, best_score, color))
+            votes = deque(maxlen=VOTE_WINDOW)
+            votes.append(vote)
 
-    # ========= DRAW LAST KNOWN RESULTS (FAST) =========
-    for (x1, y1, x2, y2, name, score, color) in last_faces:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        cv2.putText(
-            frame,
-            f"{name} ({score:.2f})",
-            (x1, y1 - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            color,
-            2
-        )
+            final_name = Counter(votes).most_common(1)[0][0]
+            color = (0, 255, 0) if final_name != "Unknown" else (0, 0, 255)
 
-    cv2.imshow("Live Face Recognition (Optimized)", frame)
+            tracker = cv2.TrackerKCF_create()
+            tracker.init(frame, (x1, y1, w, h))
 
-    if cv2.waitKey(1) & 0xFF in [ord('q'), ord('Q'), 27]:
+            tracked_faces.append({
+                "tracker": tracker,
+                "votes": votes,
+                "name": final_name,
+                "color": color
+            })
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(
+                frame,
+                f"{final_name} ({score:.2f})",
+                (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                color,
+                2
+            )
+
+    cv2.imshow("Face Recognition (FAISS + Tracking)", frame)
+    if cv2.waitKey(1) & 0xFF in [27, ord('q')]:
         break
 
 cap.release()
 cv2.destroyAllWindows()
-print("✓ Camera closed")
