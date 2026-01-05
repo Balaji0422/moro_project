@@ -1,0 +1,28 @@
+# Face Recognition System - InsightFace + FAISS
+# Python 3.11.9
+
+# Core Face Recognition
+insightface==0.7.3
+onnxruntime==1.23.2
+
+# Computer Vision
+opencv-contrib-python==4.12.0.88
+opencv-python==4.12.0.88
+
+# Numerical Computing
+numpy==2.2.6
+
+# FAISS - Similarity Search
+faiss-cpu==1.8.0
+
+# Image Processing
+Pillow==12.1.0
+
+# Machine Learning Utilities
+scikit-learn==1.8.0
+scikit-image==0.26.0
+
+# Additional utilities
+Cython==3.0.8
+matplotlib==3.10.1
+tqdm==4.67.1
