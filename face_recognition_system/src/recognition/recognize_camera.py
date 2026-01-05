@@ -5,6 +5,7 @@ import faiss
 import numpy as np
 from insightface.app import FaceAnalysis
 from collections import deque, Counter
+from datetime import datetime
 
 # ================== PATH SETUP ==================
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
@@ -47,6 +48,18 @@ while True:
 
     frame_id += 1
 
+    # ================= TIME (TOP-RIGHT) =================
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cv2.putText(
+        frame,
+        current_time,
+        (frame.shape[1] - 280, 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255, 255, 255),
+        2
+    )
+
     # ================= TRACKING =================
     active_tracks = []
     for data in tracked_faces:
@@ -54,10 +67,12 @@ while True:
         if ok:
             x, y, w, h = map(int, bbox)
             active_tracks.append(data)
+
+            label = f'{data["name"]} | {data["score"]:.2f}'
             cv2.rectangle(frame, (x, y), (x + w, y + h), data["color"], 2)
             cv2.putText(
                 frame,
-                data["name"],
+                label,
                 (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
@@ -102,13 +117,15 @@ while True:
                 "tracker": tracker,
                 "votes": votes,
                 "name": final_name,
-                "color": color
+                "color": color,
+                "score": score          # ✅ FIX: STORE CONFIDENCE
             })
 
+            label = f"{final_name} | {score:.2f}"
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 frame,
-                f"{final_name} ({score:.2f})",
+                label,
                 (x1, y1 - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
